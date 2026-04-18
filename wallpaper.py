@@ -29,33 +29,41 @@ FEEDS = [
     "https://commons.wikimedia.org/w/api.php?action=featuredfeed&feed=potd&feedformat=rss&language=en",
     "https://www.reddit.com/r/wallpapers/.rss",
     "https://www.reddit.com/r/wallpaper/.rss",
-    "https://www.reddit.com/r/EarthPorn/.rss"
+    "https://www.reddit.com/r/EarthPorn/.rss",
+    'https://www.reddit.com/r/BotanicalPorn/.rss',
+    'https://www.reddit.com/r/MacroPorn/.rss',
+    'https://www.reddit.com/r/NaturePorn/.rss',
 ]
 
 def get_image_url_from_feed_with_entry(feed_url):
-    """Parses an RSS feed and extracts a random image URL."""
+    """Parses an RSS feed and returns (image_url, entry, source_name)"""
     logging.info("Fetching feed: %s", feed_url)
 
-    # Custom User-Agent and cache-control headers to prevent getting stale feeds
     headers = {
-        "User-Agent": "DesktopWallpaperBot/1.0",
-        "Cache-Control": "no-cache, no-store, must-revalidate",
-        "Pragma": "no-cache",
-        "Expires": "0",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Cache-Control": "no-cache",
     }
 
     try:
-        # Fetch feed content first to handle headers correctly
-        response = requests.get(feed_url, headers=headers, timeout=15)
+        response = requests.get(feed_url, headers=headers, timeout=20)
         response.raise_for_status()
         feed = feedparser.parse(response.content)
     except requests.RequestException as e:
         logging.error("Failed to fetch feed %s: %s", feed_url, e)
-        return None
+        return None, None, "Unknown"
 
-    if not feed.entries:
-        logging.warning("No entries found in feed.")
-        return None
+    # Determine source name from the feed URL
+    if "wikimedia.org" in feed_url.lower():
+        source_name = "Wikimedia Commons • Picture of the Day"
+    else:
+        # Extract subreddit name from Reddit URL (e.g. /r/BotanicalPorn)
+        match = re.search(r'/r/([^/]+)/', feed_url)
+        source_name = f"/r/{match.group(1)}" if match else "Reddit"
 
     entries = feed.entries[:]
     random.shuffle(entries)
@@ -63,12 +71,10 @@ def get_image_url_from_feed_with_entry(feed_url):
     for entry in entries:
         url = extract_url(entry)
         if url:
-            return url, entry
-
-    return None, None
+            return url, entry, source_name
 
     logging.warning("No suitable image found in feed entries.")
-    return None
+    return None, None, source_name
 
 def extract_url(entry):
     """Extracts image URL from a feed entry."""
@@ -132,8 +138,8 @@ def extract_url(entry):
 
     return None
 
-def download_image(url, entry=None):
-    """Downloads the image, resizes it, and adds caption if entry metadata is available."""
+def download_image(url, entry=None, source_name=""):
+    """Downloads the image, resizes it, and adds caption."""
     try:
         logging.info("Downloading image: %s", url)
         headers = {"User-Agent": "DesktopWallpaperBot/1.0"}
@@ -154,24 +160,24 @@ def download_image(url, entry=None):
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
 
-        # Resize to fit within 1920x1080 while preserving aspect ratio
+        # Resize
         with Image.open(final_path) as img:
             img.thumbnail((1920, 1080), Image.Resampling.LANCZOS)
             img.save(final_path, quality=95)
 
-        # Add caption if we have the RSS entry
+        # Add caption
         if entry:
             title = getattr(entry, 'title', 'Untitled')
-            # Try to get author/credit
+
             author = ""
             if hasattr(entry, 'author'):
                 author = entry.author
-            elif hasattr(entry, 'dc_creator'):      # some feeds use Dublin Core
+            elif hasattr(entry, 'dc_creator'):
                 author = entry.dc_creator
             elif hasattr(entry, 'credit'):
                 author = entry.credit
 
-            add_caption_to_image(final_path, title, author)
+            add_caption_to_image(final_path, title, author, source_name)
 
         logging.info("Image processed and saved: %s", final_path)
         return final_path
@@ -180,65 +186,74 @@ def download_image(url, entry=None):
         logging.error("Download or processing failed: %s", e)
         return None
 
-def add_caption_to_image(image_path, title, source=""):
-    """Adds a nicely formatted caption in the bottom-right corner."""
+def add_caption_to_image(image_path, title, source="", subreddit_or_source=""):
+    """Adds caption in bottom-right with title, author, and subreddit/source."""
     try:
         with Image.open(image_path).convert("RGB") as img:
             draw = ImageDraw.Draw(img)
 
-            # Use a system font (fallback to default if not found)
             try:
-                font = ImageFont.truetype("arial.ttf", 28)      # Windows
+                font = ImageFont.truetype("arial.ttf", 18)          # Title font
+                small_font = ImageFont.truetype("arial.ttf", 14)    # Subreddit / author font
             except IOError:
-                try:
-                    font = ImageFont.truetype("DejaVuSans.ttf", 28)  # Linux/macOS common
-                except IOError:
-                    font = ImageFont.load_default()
+                font = ImageFont.load_default()
+                small_font = ImageFont.load_default()
 
-            # Build caption text
-            caption = title.strip()
+            # Build the caption
+            lines = [title.strip()]
+
+            if subreddit_or_source:
+                lines.append(subreddit_or_source)
+
             if source and source.strip() and source.lower() not in title.lower():
-                caption += f"\n{source.strip()}"
+                lines.append(source.strip())
 
-            # Wrap long lines
-            wrapped_lines = textwrap.wrap(caption, width=60)
-            line_height = font.getbbox("A")[3] + 8   # approximate line spacing
-            total_text_height = len(wrapped_lines) * line_height
+            # Wrap long title if needed
+            if len(lines[0]) > 80:
+                wrapped = textwrap.wrap(lines[0], width=70)
+                lines = wrapped + lines[1:]
 
-            # Padding and position (bottom-right with margin)
-            margin = 30
-            padding = 15
-            text_width = max(draw.textlength(line, font=font) for line in wrapped_lines)
+            line_height = font.getbbox("A")[3] + 8
+            small_line_height = small_font.getbbox("A")[3] + 6
+
+            total_text_height = (len(lines) * line_height) + (len(lines) - 1) * 4
+
+            # Position bottom-right
+            margin = 40
+            padding = 18
+            text_width = max(draw.textlength(line, font=font if i == 0 else small_font)
+                           for i, line in enumerate(lines))
             box_width = int(text_width + padding * 2)
             box_height = int(total_text_height + padding * 2)
 
             x = img.width - box_width - margin
             y = img.height - box_height - margin
 
-            # Draw semi-transparent dark background
+            # Semi-transparent background
             overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
             draw_overlay = ImageDraw.Draw(overlay)
             draw_overlay.rounded_rectangle(
                 [x, y, x + box_width, y + box_height],
-                radius=12,
-                fill=(0, 0, 0, 180)   # semi-transparent black
+                radius=15,
+                fill=(0, 0, 0, 190)
             )
-
-            # Composite the overlay onto the image
             img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
-
-            # Redraw on the final image
             draw = ImageDraw.Draw(img)
 
-            # Draw each line of text
+            # Draw text
             current_y = y + padding
-            for line in wrapped_lines:
-                draw.text((x + padding, current_y), line, font=font, fill=(255, 255, 255))
-                current_y += line_height
+            for i, line in enumerate(lines):
+                if i == 0:
+                    # Title in brighter white + larger font
+                    draw.text((x + padding, current_y), line, font=font, fill=(255, 255, 255))
+                    current_y += line_height
+                else:
+                    # Subreddit / author in slightly dimmer white
+                    draw.text((x + padding, current_y), line, font=small_font, fill=(220, 220, 220))
+                    current_y += small_line_height
 
-            # Save back to the same file
             img.save(image_path, quality=95)
-            logging.info("Caption added to bottom-right of image.")
+            logging.info("Caption with subreddit/source added.")
 
     except Exception as e:
         logging.warning("Could not add caption: %s", e)
@@ -269,26 +284,23 @@ def set_wallpaper_fit(image_path):
         logging.error("Failed to set wallpaper style: %s", e)
 
 def main():
-    """Main function to fetch, process, and set wallpaper."""
     feed_url = random.choice(FEEDS)
     logging.info("Selected feed: %s", feed_url)
 
-    # We need to modify get_image_url_from_feed slightly to also return the entry
-    # For now, we'll adjust it minimally — see note below
-
-    image_url, entry = get_image_url_from_feed_with_entry(feed_url)   # we'll create this
+    image_url, entry, source_name = get_image_url_from_feed_with_entry(feed_url)
 
     if not image_url:
         logging.error("Could not find an image URL. Exiting.")
         return
 
-    local_path = download_image(image_url, entry)
+    local_path = download_image(image_url, entry, source_name)
+
     if not local_path:
         logging.error("Could not process image. Exiting.")
         return
 
     set_wallpaper_fit(local_path)
-    logging.info("Wallpaper updated successfully with caption.")
+    logging.info("Wallpaper updated successfully with caption and source.")
 
 if __name__ == "__main__":
     main()
