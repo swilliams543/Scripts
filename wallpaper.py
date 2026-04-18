@@ -3,7 +3,8 @@ Windows Wallpaper Rotator
 Fetches random high-quality images from RSS feeds and updates the desktop background.
 """
 
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont, ImageEnhance
+import textwrap   # for wrapping long titles
 import winreg
 import os
 import random
@@ -31,7 +32,7 @@ FEEDS = [
     "https://www.reddit.com/r/EarthPorn/.rss"
 ]
 
-def get_image_url_from_feed(feed_url):
+def get_image_url_from_feed_with_entry(feed_url):
     """Parses an RSS feed and extracts a random image URL."""
     logging.info("Fetching feed: %s", feed_url)
 
@@ -56,14 +57,15 @@ def get_image_url_from_feed(feed_url):
         logging.warning("No entries found in feed.")
         return None
 
-    # Shuffle entries to get a random image
     entries = feed.entries[:]
     random.shuffle(entries)
 
     for entry in entries:
         url = extract_url(entry)
         if url:
-            return url
+            return url, entry
+
+    return None, None
 
     logging.warning("No suitable image found in feed entries.")
     return None
@@ -130,8 +132,8 @@ def extract_url(entry):
 
     return None
 
-def download_image(url):
-    """Downloads the image and resizes it to fit within 1920x1080 while preserving aspect ratio."""
+def download_image(url, entry=None):
+    """Downloads the image, resizes it, and adds caption if entry metadata is available."""
     try:
         logging.info("Downloading image: %s", url)
         headers = {"User-Agent": "DesktopWallpaperBot/1.0"}
@@ -145,25 +147,101 @@ def download_image(url):
         if ext not in ['.jpg', '.jpeg', '.png', '.bmp']:
             ext = ".jpg"
 
-        original_path = os.path.join(folder, f"wallpaper_original{ext}")
         final_path = os.path.join(folder, f"wallpaper_current{ext}")
 
-        # Save original download
-        with open(original_path, 'wb') as f:
+        # Save downloaded image
+        with open(final_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
 
-        # Resize while preserving aspect ratio (never larger than 1920x1080)
-        with Image.open(original_path) as img:
-            img.thumbnail((1920, 1080), Image.Resampling.LANCZOS)   # High quality downsampling
-            img.save(final_path, quality=95)   # Good quality for JPG
+        # Resize to fit within 1920x1080 while preserving aspect ratio
+        with Image.open(final_path) as img:
+            img.thumbnail((1920, 1080), Image.Resampling.LANCZOS)
+            img.save(final_path, quality=95)
 
-        logging.info("Image resized to fit within 1920x1080: %s", final_path)
+        # Add caption if we have the RSS entry
+        if entry:
+            title = getattr(entry, 'title', 'Untitled')
+            # Try to get author/credit
+            author = ""
+            if hasattr(entry, 'author'):
+                author = entry.author
+            elif hasattr(entry, 'dc_creator'):      # some feeds use Dublin Core
+                author = entry.dc_creator
+            elif hasattr(entry, 'credit'):
+                author = entry.credit
+
+            add_caption_to_image(final_path, title, author)
+
+        logging.info("Image processed and saved: %s", final_path)
         return final_path
 
     except Exception as e:
-        logging.error("Download or resize failed: %s", e)
+        logging.error("Download or processing failed: %s", e)
         return None
+
+def add_caption_to_image(image_path, title, source=""):
+    """Adds a nicely formatted caption in the bottom-right corner."""
+    try:
+        with Image.open(image_path).convert("RGB") as img:
+            draw = ImageDraw.Draw(img)
+
+            # Use a system font (fallback to default if not found)
+            try:
+                font = ImageFont.truetype("arial.ttf", 28)      # Windows
+            except IOError:
+                try:
+                    font = ImageFont.truetype("DejaVuSans.ttf", 28)  # Linux/macOS common
+                except IOError:
+                    font = ImageFont.load_default()
+
+            # Build caption text
+            caption = title.strip()
+            if source and source.strip() and source.lower() not in title.lower():
+                caption += f"\n{source.strip()}"
+
+            # Wrap long lines
+            wrapped_lines = textwrap.wrap(caption, width=60)
+            line_height = font.getbbox("A")[3] + 8   # approximate line spacing
+            total_text_height = len(wrapped_lines) * line_height
+
+            # Padding and position (bottom-right with margin)
+            margin = 30
+            padding = 15
+            text_width = max(draw.textlength(line, font=font) for line in wrapped_lines)
+            box_width = int(text_width + padding * 2)
+            box_height = int(total_text_height + padding * 2)
+
+            x = img.width - box_width - margin
+            y = img.height - box_height - margin
+
+            # Draw semi-transparent dark background
+            overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+            draw_overlay = ImageDraw.Draw(overlay)
+            draw_overlay.rounded_rectangle(
+                [x, y, x + box_width, y + box_height],
+                radius=12,
+                fill=(0, 0, 0, 180)   # semi-transparent black
+            )
+
+            # Composite the overlay onto the image
+            img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+
+            # Redraw on the final image
+            draw = ImageDraw.Draw(img)
+
+            # Draw each line of text
+            current_y = y + padding
+            for line in wrapped_lines:
+                draw.text((x + padding, current_y), line, font=font, fill=(255, 255, 255))
+                current_y += line_height
+
+            # Save back to the same file
+            img.save(image_path, quality=95)
+            logging.info("Caption added to bottom-right of image.")
+
+    except Exception as e:
+        logging.warning("Could not add caption: %s", e)
 
 
 def set_wallpaper_fit(image_path):
@@ -191,21 +269,26 @@ def set_wallpaper_fit(image_path):
         logging.error("Failed to set wallpaper style: %s", e)
 
 def main():
-    """Main function to fetch, resize, and set wallpaper."""
+    """Main function to fetch, process, and set wallpaper."""
     feed_url = random.choice(FEEDS)
-    image_url = get_image_url_from_feed(feed_url)
+    logging.info("Selected feed: %s", feed_url)
+
+    # We need to modify get_image_url_from_feed slightly to also return the entry
+    # For now, we'll adjust it minimally — see note below
+
+    image_url, entry = get_image_url_from_feed_with_entry(feed_url)   # we'll create this
 
     if not image_url:
         logging.error("Could not find an image URL. Exiting.")
         return
 
-    local_path = download_image(image_url)
+    local_path = download_image(image_url, entry)
     if not local_path:
-        logging.error("Could not download/resize image. Exiting.")
+        logging.error("Could not process image. Exiting.")
         return
 
-    set_wallpaper_fit(local_path)   # Use the new function
-    logging.info("Wallpaper updated successfully with Fit style (no cropping).")
+    set_wallpaper_fit(local_path)
+    logging.info("Wallpaper updated successfully with caption.")
 
 if __name__ == "__main__":
     main()
