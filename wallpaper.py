@@ -2,6 +2,9 @@
 Windows Wallpaper Rotator
 Fetches random high-quality images from RSS feeds and updates the desktop background.
 """
+
+from PIL import Image
+import winreg
 import os
 import random
 import ctypes
@@ -128,65 +131,81 @@ def extract_url(entry):
     return None
 
 def download_image(url):
-    """Downloads the image to a persistent file in the Pictures folder."""
+    """Downloads the image and resizes it to fit within 1920x1080 while preserving aspect ratio."""
     try:
         logging.info("Downloading image: %s", url)
         headers = {"User-Agent": "DesktopWallpaperBot/1.0"}
         response = requests.get(url, headers=headers, stream=True, timeout=20)
         response.raise_for_status()
 
-        # Save to a persistent location. If the file is deleted (like in a temp folder),
-        # Windows will lose the wallpaper source and show a black background.
         folder = os.path.join(os.path.expanduser("~"), "Pictures", "Wallpapers")
-        if not os.path.exists(folder):
-            os.makedirs(folder)
+        os.makedirs(folder, exist_ok=True)
 
-        ext = os.path.splitext(url)[1].split('?')[0].lower()
+        ext = os.path.splitext(url.split('?')[0])[1].lower()
         if ext not in ['.jpg', '.jpeg', '.png', '.bmp']:
             ext = ".jpg"
 
-        path = os.path.join(folder, f"wallpaper_current{ext}")
+        original_path = os.path.join(folder, f"wallpaper_original{ext}")
+        final_path = os.path.join(folder, f"wallpaper_current{ext}")
 
-        with open(path, 'wb') as f:
+        # Save original download
+        with open(original_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
 
-        return path
-    except (requests.RequestException, OSError) as e:
-        logging.error("Download failed: %s", e)
+        # Resize while preserving aspect ratio (never larger than 1920x1080)
+        with Image.open(original_path) as img:
+            img.thumbnail((1920, 1080), Image.Resampling.LANCZOS)   # High quality downsampling
+            img.save(final_path, quality=95)   # Good quality for JPG
+
+        logging.info("Image resized to fit within 1920x1080: %s", final_path)
+        return final_path
+
+    except Exception as e:
+        logging.error("Download or resize failed: %s", e)
         return None
 
-def set_wallpaper(image_path):
-    """Sets the desktop wallpaper on Windows."""
-    logging.info("Setting wallpaper to: %s", image_path)
+
+def set_wallpaper_fit(image_path):
+    """Sets the desktop wallpaper and forces 'Fit' style (preserves aspect ratio, no crop)."""
     try:
-        # SystemParametersInfoW requires absolute path
         abs_path = os.path.abspath(image_path)
+
+        # Set registry keys for "Fit" style
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop", 0, winreg.KEY_WRITE)
+        winreg.SetValueEx(key, "WallpaperStyle", 0, winreg.REG_SZ, "6")   # 6 = Fit
+        winreg.SetValueEx(key, "TileWallpaper", 0, winreg.REG_SZ, "0")
+        winreg.CloseKey(key)
+
+        # Apply the wallpaper
         result = ctypes.windll.user32.SystemParametersInfoW(
             SPI_SETDESKWALLPAPER, 0, abs_path, SPIF_UPDATEINIFILE | SPIF_SENDWININICHANGE
         )
-        if not result:
-            logging.error("SystemParametersInfoW returned False.")
-    except OSError as e:
-        logging.error("Failed to set wallpaper: %s", e)
+
+        if result:
+            logging.info("Wallpaper set successfully with 'Fit' style.")
+        else:
+            logging.error("SystemParametersInfoW failed.")
+
+    except Exception as e:
+        logging.error("Failed to set wallpaper style: %s", e)
 
 def main():
-    """Main function to fetch and set wallpaper."""
-    # Select a random feed
+    """Main function to fetch, resize, and set wallpaper."""
     feed_url = random.choice(FEEDS)
-
     image_url = get_image_url_from_feed(feed_url)
+
     if not image_url:
-        logging.error("Could not find an image URL from the selected feed. Exiting.")
+        logging.error("Could not find an image URL. Exiting.")
         return
 
     local_path = download_image(image_url)
     if not local_path:
-        logging.error("Could not download image. Exiting.")
+        logging.error("Could not download/resize image. Exiting.")
         return
 
-    set_wallpaper(local_path)
-    logging.info("Wallpaper updated successfully.")
+    set_wallpaper_fit(local_path)   # Use the new function
+    logging.info("Wallpaper updated successfully with Fit style (no cropping).")
 
 if __name__ == "__main__":
     main()

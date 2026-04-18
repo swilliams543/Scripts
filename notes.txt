@@ -13,3 +13,7 @@ to check how much memory you have to know if you need to close applications you 
 
 REMEMEBER VSCODE CAN BE USED TO ADD NEW FILES CHANGE CODE AND THEN COMMIT
 YOU CMMITT BY EDITING THE FILE LOCALLY FROM D:\swilliams543\williams.github.io AND THEN GOING TO THE SOURCE CONTROL WINDOW CLICKING COMMIT CTRL S AND CTRL W. then you CLICK SYNC CHANGES TO FINALIZE. 
+
+
+
+"D:\Scripts\RunSilent.vbs" python "D:\Scripts\wallpaper.py"
