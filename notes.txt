@@ -2,6 +2,9 @@ Notes to be taken here.
 narrowway_25@outlook.com
 Savior112
 
+Steam username and login:
+lily4381:Savior112
+
 C: main drive has more space faster, can be used for books, misc files, binary programs (books can be opened by default in sumatrapdf)
 D: can be used for work, music, movies, and scripts
 

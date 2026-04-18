@@ -187,73 +187,64 @@ def download_image(url, entry=None, source_name=""):
         return None
 
 def add_caption_to_image(image_path, title, source="", subreddit_or_source=""):
-    """Adds caption in bottom-right with title, author, and subreddit/source."""
+    """Adds caption in bottom-right with black outline (no background box)."""
     try:
         with Image.open(image_path).convert("RGB") as img:
             draw = ImageDraw.Draw(img)
 
+            # Load fonts
             try:
-                font = ImageFont.truetype("arial.ttf", 18)          # Title font
-                small_font = ImageFont.truetype("arial.ttf", 14)    # Subreddit / author font
+                font = ImageFont.truetype("arial.ttf", 20)      # Title font - slightly larger
+                small_font = ImageFont.truetype("arial.ttf", 15)  # Subreddit / author
             except IOError:
                 font = ImageFont.load_default()
                 small_font = ImageFont.load_default()
 
-            # Build the caption
+            # Build the lines
             lines = [title.strip()]
-
-            if subreddit_or_source:
-                lines.append(subreddit_or_source)
-
+            #if subreddit_or_source:
+            #    lines.append(subreddit_or_source)
             if source and source.strip() and source.lower() not in title.lower():
                 lines.append(source.strip())
 
-            # Wrap long title if needed
+            # Wrap very long title
             if len(lines[0]) > 80:
-                wrapped = textwrap.wrap(lines[0], width=70)
+                wrapped = textwrap.wrap(lines[0], width=65)
                 lines = wrapped + lines[1:]
 
-            line_height = font.getbbox("A")[3] + 8
-            small_line_height = small_font.getbbox("A")[3] + 6
+            # Calculate positioning
+            margin = 50
+            padding = 15
 
-            total_text_height = (len(lines) * line_height) + (len(lines) - 1) * 4
+            # Draw each line with black outline + white fill
+            current_y = img.height - margin
 
-            # Position bottom-right
-            margin = 40
-            padding = 18
-            text_width = max(draw.textlength(line, font=font if i == 0 else small_font)
-                           for i, line in enumerate(lines))
-            box_width = int(text_width + padding * 2)
-            box_height = int(total_text_height + padding * 2)
+            for i, line in enumerate(reversed(lines)):   # Draw from bottom up for easier positioning
+                current_font = font if i == len(lines) - 1 else small_font
+                text_color = (255, 255, 255)
+                outline_color = (0, 0, 0)
 
-            x = img.width - box_width - margin
-            y = img.height - box_height - margin
+                # Get text size
+                bbox = draw.textbbox((0, 0), line, font=current_font)
+                text_width = bbox[2] - bbox[0]
+                text_height = bbox[3] - bbox[1]
 
-            # Semi-transparent background
-            overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
-            draw_overlay = ImageDraw.Draw(overlay)
-            draw_overlay.rounded_rectangle(
-                [x, y, x + box_width, y + box_height],
-                radius=15,
-                fill=(0, 0, 0, 190)
-            )
-            img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
-            draw = ImageDraw.Draw(img)
+                # Position: right-aligned with margin
+                x = img.width - text_width - margin
+                y = current_y - text_height - padding
 
-            # Draw text
-            current_y = y + padding
-            for i, line in enumerate(lines):
-                if i == 0:
-                    # Title in brighter white + larger font
-                    draw.text((x + padding, current_y), line, font=font, fill=(255, 255, 255))
-                    current_y += line_height
-                else:
-                    # Subreddit / author in slightly dimmer white
-                    draw.text((x + padding, current_y), line, font=small_font, fill=(220, 220, 220))
-                    current_y += small_line_height
+                # Draw black outline (stroke) - multiple offsets for thickness
+                for dx, dy in [(-2, -2), (-2, 2), (2, -2), (2, 2), (-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                    draw.text((x + dx, y + dy), line, font=current_font, fill=outline_color)
+
+                # Draw main white text on top
+                draw.text((x, y), line, font=current_font, fill=text_color)
+
+                # Move up for next line
+                current_y = y - 4   # small gap between lines
 
             img.save(image_path, quality=95)
-            logging.info("Caption with subreddit/source added.")
+            logging.info("Caption with black outline added (no background).")
 
     except Exception as e:
         logging.warning("Could not add caption: %s", e)
